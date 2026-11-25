@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36" role="img" aria-label="Find in conversation">
+  <rect x="3" y="6" width="26" height="20" rx="6" fill="#e8f1fb" stroke="#247bbf" stroke-width="2"/>
+  <g stroke="#247bbf" stroke-width="2" stroke-linecap="round">
+    <path d="M9 13h12"/>
+    <path d="M9 18h7"/>
+  </g>
+  <circle cx="24" cy="22" r="6" fill="#ffffff" stroke="#0f5c96" stroke-width="2.4"/>
+  <path d="M28.4 26.4l4.2 4.2" stroke="#0f5c96" stroke-width="2.8" stroke-linecap="round"/>
+</svg>

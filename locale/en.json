@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Find in conversation",
+    "description": "Adds a browser-style find bar for the open conversation. Press Ctrl+F (Cmd+F on macOS), type to highlight every match in the loaded transcript, and use Enter / Shift+Enter or Ctrl+G to step through them; Esc closes the bar. Only messages already scrolled into the session window are searched, so scroll up to load older turns before searching them."
+  }
+}
