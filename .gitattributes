@@ -1,0 +1,19 @@
+* text=auto eol=lf
+
+# Explicit text types (so eol=lf is applied even if detection is unsure)
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf
+*.svg   text eol=lf
+
+# Binary types — never normalize
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.gif   binary
+*.avif  binary
+*.zst   binary
+*.zstd  binary

@@ -1,7 +1,9 @@
 {
   "name": "@local/dsh-find-in-session",
   "version": "1.0.0",
+  "description": "Find inside the open conversation: Ctrl+F highlights every match, reports an honest count, and pages back using the host's own load-earlier control.",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": "./index.js",
