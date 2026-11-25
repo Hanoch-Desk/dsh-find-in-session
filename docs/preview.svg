@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" role="img" aria-label="Find in conversation: a find bar over a chat transcript with highlighted matches">
+  <rect width="640" height="300" fill="#F5F6FC"/>
+
+  <!-- conversation column -->
+  <rect x="28" y="24" width="584" height="252" rx="12" fill="#FFFFFF"/>
+  <line x1="28" y1="56" x2="612" y2="56" stroke="#E7E8F0" stroke-width="1"/>
+
+  <!-- sidebar rail hint -->
+  <rect x="28" y="24" width="44" height="252" rx="12" fill="#F0F1F8"/>
+  <rect x="44" y="140" width="12" height="12" rx="3" fill="#9AA0B4"/>
+  <circle cx="50" cy="176" r="7" fill="#D8DAE6"/>
+
+  <!-- user message -->
+  <rect x="92" y="76" width="176" height="12" rx="6" fill="#DDE0EC"/>
+  <rect x="92" y="96" width="248" height="12" rx="6" fill="#DDE0EC"/>
+
+  <!-- assistant message with matches -->
+  <rect x="92" y="132" width="132" height="10" rx="5" fill="#E9EBF3"/>
+  <rect x="92" y="164" width="332" height="12" rx="6" fill="#E9EBF3"/>
+  <rect x="92" y="184" width="300" height="12" rx="6" fill="#E9EBF3"/>
+  <rect x="92" y="204" width="356" height="12" rx="6" fill="#E9EBF3"/>
+  <rect x="92" y="234" width="212" height="12" rx="6" fill="#E9EBF3"/>
+
+  <!-- match highlight (inactive) on two runs -->
+  <rect x="168" y="162" width="58" height="16" rx="4" fill="#FFF3BF"/>
+  <rect x="212" y="202" width="58" height="16" rx="4" fill="#FFF3BF"/>
+  <!-- active match -->
+  <rect x="168" y="182" width="58" height="16" rx="4" fill="#FFB020"/>
+
+  <!-- find bar -->
+  <rect x="352" y="34" width="244" height="34" rx="10" fill="#FFFFFF" stroke="#D9DBE8" stroke-width="1"/>
+  <rect x="352" y="34" width="244" height="34" rx="10" fill="none" stroke="#C9CCDC" stroke-width="1"/>
+  <circle cx="368" cy="51" r="5" fill="none" stroke="#6B7280" stroke-width="1.6"/>
+  <line x1="372" y1="55" x2="377" y2="60" stroke="#6B7280" stroke-width="1.6" stroke-linecap="round"/>
+  <text x="386" y="56" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#1A1A1A">hello world</text>
+  <text x="486" y="56" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#6B7280">2/5</text>
+  <line x1="512" y1="42" x2="512" y2="60" stroke="#E2E4EE" stroke-width="1"/>
+  <path d="M524 55l5-5 5 5" fill="none" stroke="#4B5563" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M544 47l5 5 5-5" fill="none" stroke="#4B5563" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M566 46l8 8M574 46l-8 8" fill="none" stroke="#4B5563" stroke-width="1.6" stroke-linecap="round"/>
+
+  <!-- sidebar footer entry -->
+  <rect x="36" y="248" width="28" height="20" rx="6" fill="#E7E9F4"/>
+  <circle cx="50" cy="258" r="4.5" fill="none" stroke="#5B6178" stroke-width="1.5"/>
+
+  <!-- caption -->
+  <text x="92" y="292" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#7A8095">Ctrl+F opens one find bar over the conversation; matches highlight in place, the active one is darker.</text>
+</svg>

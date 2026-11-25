@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "Find in conversation",
-    "description": "Adds a browser-style find bar for the open conversation. Press Ctrl+F (Cmd+F on macOS), type to highlight every match in the loaded transcript, and use Enter / Shift+Enter or Ctrl+G to step through them; Esc closes the bar. Only messages already scrolled into the session window are searched, so scroll up to load older turns before searching them."
+    "description": "Adds a find bar to the open conversation. Press Ctrl+F (Cmd+F on macOS), type and every match in the visible message text is highlighted using the same literal, case-insensitive, whitespace-flexible matching the Host's own session filter uses; step through hits with Enter / Shift+Enter, F3 / Shift+F3 or Ctrl+G, and close with Esc. When nothing matches, the bar clicks the Host's own \"load earlier\" control to page further back (up to 8 pages), so history that was never scrolled into the window is searchable too. The count is the real hit total; at most 4000 hits are painted and the bar says so explicitly instead of silently dropping the rest. It matches only text the conversation column has rendered: it does not read the session event log, so unrendered content such as raw tool-call arguments or request headers is out of reach, and nothing crosses session boundaries.",
+    "detail": "docs/DETAIL.md"
   }
 }

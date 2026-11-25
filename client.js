@@ -6,7 +6,7 @@ window.__ModuleLoader__.load({
 
     /** Browser-side locale namespace owned by this bundle. */
     const NS = 'find-in-session'
-    /** Physical key that opens the bar; also the id of the injected stylesheet. */
+    /** Identity of the stylesheet this bundle injects. */
     const STYLE_KEY = '@local/dsh-find-in-session/find-bar.css'
     const MATCH_HIGHLIGHT = 'dfis-match'
     const ACTIVE_HIGHLIGHT = 'dfis-active'
@@ -14,25 +14,162 @@ window.__ModuleLoader__.load({
     const BAR_Z_INDEX = 40
     const SEARCH_DEBOUNCE_MS = 20
 
+    // #region pure-contracts
+    /**
+     * `new Highlight(...ranges)` costs one argument per match, so the paint
+     * layer stops here. The number shown to people is always the real match
+     * count; matches past this limit are labelled, never silently dropped.
+     */
+    const MATCH_PAINT_LIMIT = 4000
+    /** One older-history page per round; the loop gives up after this many. */
+    const HISTORY_MAX_ROUNDS = 8
+    /** How long one older-history page may take before the loop gives up. */
+    const HISTORY_SETTLE_MS = 2500
+
+    /**
+     * Highlight colours, registered as theme tokens so the marks follow the
+     * active light/dark scheme instead of being the only hard-coded colours in
+     * the file. Every pair is checked for WCAG AA contrast by `verify.mjs`.
+     */
+    const HIGHLIGHT_TOKENS = {
+      '--dfis-match-bg': { light: '#fff3bf', dark: '#4a3f14' },
+      '--dfis-match-fg': { light: '#1b1b1b', dark: '#f5efd0' },
+      '--dfis-active-bg': { light: '#ffb020', dark: '#c98a12' },
+      '--dfis-active-fg': { light: '#1b1b1b', dark: '#12100a' },
+    }
+
+    /** Escape one whitespace-free run so it is matched literally. */
+    function escapePatternPart(part) {
+      return part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+    }
+
+    /**
+     * Query semantics, kept identical to the Host's own session text filter
+     * (`compileSessionTextFilter` in `@deepseek-ai/dsh-session-query`):
+     * case-insensitive, whitespace-flexible between runs, literal otherwise.
+     *
+     * The Host throws on a blank filter because it is a filter contract; a
+     * find box must stay quiet instead, so a blank query compiles to `null`.
+     *
+     * @param {string} query - raw text from the input.
+     * @returns {RegExp | null} pattern, or `null` for a blank query.
+     */
+    function compileQueryPattern(query) {
+      const trimmed = query.trim()
+      if (trimmed === '') return null
+      const pattern = trimmed.split(/\s+/u).map(escapePatternPart).join('\\s+')
+      return new RegExp(pattern, 'iu')
+    }
+
+    /**
+     * Match spans of `pattern` inside `text`, in reading order.
+     * @param {string} text
+     * @param {RegExp} pattern
+     * @returns {Array<{ start: number, end: number }>}
+     */
+    function matchSpans(text, pattern) {
+      const scan = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`)
+      const spans = []
+      for (let found = scan.exec(text); found !== null; found = scan.exec(text)) {
+        // The Host filter can never match empty (every run is non-empty), but a
+        // zero-length match would spin this loop, so step past one defensively.
+        if (found[0].length === 0) {
+          scan.lastIndex += 1
+          continue
+        }
+        spans.push({ start: found.index, end: found.index + found[0].length })
+      }
+      return spans
+    }
+
+    /**
+     * What one key press on the find input means.
+     * @param {{ key: string, shiftKey?: boolean, isComposing?: boolean, keyCode?: number }} event
+     * @param {boolean} composing - the input is inside an IME composition.
+     * @returns {'next' | 'previous' | 'close' | null}
+     */
+    function inputIntent(event, composing) {
+      const typing = composing === true || event.isComposing === true || event.keyCode === 229
+      if (typing) return null
+      if (event.key === 'Enter' || event.key === 'F3') return event.shiftKey === true ? 'previous' : 'next'
+      if (event.key === 'Escape') return 'close'
+      return null
+    }
+
+    /**
+     * Whether one more older-history page may be requested. The Host owns
+     * history: it renders `[data-chat-history=<status>]` around its own
+     * "load earlier" button and disables that button at the start of the
+     * session, so the only correct move is to click it and wait.
+     * @param {{ present: boolean, disabled: boolean, status: string | null, rounds: number }} input
+     */
+    function shouldLoadOlder(input) {
+      if (!input.present) return false
+      if (input.disabled) return false
+      if (input.rounds >= HISTORY_MAX_ROUNDS) return false
+      const status = input.status
+      return status === 'idle' || status === 'error'
+    }
+
+    /**
+     * The count label for one search state.
+     * @param {{ history: string, painting: string, total: number, painted: number, position: number }} state
+     */
+    function countParts(state) {
+      if (state.history === 'loading' && state.total === 0) return { key: 'find.searching', params: {} }
+      if (state.total === 0) return { key: 'find.empty', params: {} }
+      if (state.painting === 'capped') {
+        return { key: 'find.capped', params: { position: state.position, total: state.total, painted: state.painted } }
+      }
+      return { key: 'find.count', params: { position: state.position, total: state.total } }
+    }
+
+    /**
+     * The secondary note beside the count, or `null` when there is nothing a
+     * person needs to be told.
+     * @param {{ history: string, painting: string, total: number }} state
+     */
+    function noteKey(state) {
+      if (state.history === 'loading' && state.total > 0) return 'find.searching'
+      if (state.painting === 'unsupported') return 'find.unsupported'
+      if (state.history === 'exhausted' && state.total === 0) return 'find.historyStart'
+      return null
+    }
+
+    /** Match count shown on the sidebar entry ('' when there is none). */
+    function countText(state) {
+      if (state.total === 0) return ''
+      return state.painting === 'capped' ? `${state.total}+` : String(state.total)
+    }
+    // #endregion pure-contracts
+
     const zh = {
       'find.placeholder': '在会话中查找',
       'find.count': '{position}/{total}',
       'find.empty': '无匹配',
+      'find.searching': '正在搜索更早内容…',
+      'find.capped': '{position}/{total}，已高亮 {painted} 处',
+      'find.unsupported': '当前浏览器不支持高亮，仅定位',
+      'find.historyStart': '已到会话开头',
       'find.previous': '上一处（Shift+Enter）',
       'find.next': '下一处（Enter）',
       'find.close': '关闭（Esc）',
       'find.sidebar': '会话内查找',
-      'find.sidebarHint': '在已加载的会话内容中查找并定位',
+      'find.sidebarHint': '在会话中查找并定位，可继续搜索尚未加载的历史',
     }
     const en = {
       'find.placeholder': 'Find in conversation',
       'find.count': '{position}/{total}',
       'find.empty': 'No results',
+      'find.searching': 'Searching earlier messages…',
+      'find.capped': '{position}/{total}, highlighting {painted}',
+      'find.unsupported': 'Highlighting is unavailable; jumping only',
+      'find.historyStart': 'Reached the start of the conversation',
       'find.previous': 'Previous match (Shift+Enter)',
       'find.next': 'Next match (Enter)',
       'find.close': 'Close (Esc)',
       'find.sidebar': 'Find in conversation',
-      'find.sidebarHint': 'Search the loaded conversation and jump between matches',
+      'find.sidebarHint': 'Find and jump within the conversation, including history not loaded yet',
     }
 
     const styles = `
@@ -41,6 +178,7 @@ window.__ModuleLoader__.load({
 .dfis-input{width:170px;padding:2px 4px;border:0;outline:0;background:transparent;font-family:inherit;font-size:13px;line-height:18px;color:inherit}
 .dfis-input::placeholder{color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 .dfis-count{min-width:46px;text-align:center;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-variant-numeric:tabular-nums;white-space:nowrap}
+.dfis-note{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
 .dfis-button{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#5f5f5f);cursor:pointer}
 .dfis-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}
 .dfis-button:disabled{color:var(--dsw-alias-label-tertiary,#b4b4b4);cursor:default}
@@ -55,8 +193,8 @@ window.__ModuleLoader__.load({
 .dfis-rail{width:36px;height:36px;padding:0;border-radius:50%;justify-content:center}
 .dfis-entryHost{display:flex;width:100%}
 .dfis-entryHost[data-rail]{width:36px;justify-content:center}
-*::highlight(${MATCH_HIGHLIGHT}){background-color:rgba(255,205,66,.45);color:inherit}
-*::highlight(${ACTIVE_HIGHLIGHT}){background-color:#ffb020;color:#1b1b1b}
+*::highlight(${MATCH_HIGHLIGHT}){background-color:var(--dfis-match-bg,#fff3bf);color:var(--dfis-match-fg,#1b1b1b)}
+*::highlight(${ACTIVE_HIGHLIGHT}){background-color:var(--dfis-active-bg,#ffb020);color:var(--dfis-active-fg,#1b1b1b)}
 `
 
     /** Elements whose text never participates in a search. */
@@ -130,8 +268,8 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    /** Every range matching `query` inside one block. */
-    function rangesIn(block, query) {
+    /** Every range matching `pattern` inside one block. */
+    function rangesIn(block, pattern) {
       const nodes = textNodesOf(block)
       if (nodes.length === 0) return []
       let text = ''
@@ -140,31 +278,25 @@ window.__ModuleLoader__.load({
         spans.push({ node, start: text.length, end: text.length + node.data.length })
         text += node.data
       }
-      const lowered = text.toLowerCase()
-      const caseless = lowered.length === text.length
-      const haystack = caseless ? lowered : text
-      const needle = caseless ? query.toLowerCase() : query
-      if (needle === '') return []
       const ranges = []
-      for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) {
-        const end = at + needle.length
-        const first = locate(spans, at)
-        const last = locate(spans, end - 1)
+      for (const span of matchSpans(text, pattern)) {
+        const first = locate(spans, span.start)
+        const last = locate(spans, span.end - 1)
         if (first === null || last === null) continue
         const range = document.createRange()
-        range.setStart(first.node, at - first.start)
-        range.setEnd(last.node, end - 1 - last.start + 1)
+        range.setStart(first.node, span.start - first.start)
+        range.setEnd(last.node, span.end - 1 - last.start + 1)
         ranges.push(range)
       }
       return ranges
     }
 
     /** Ranges for the whole loaded transcript, in reading order. */
-    function collect(query) {
+    function collect(pattern) {
       const ranges = []
       for (const column of columnRoots()) {
         for (const block of blocksOf(column)) {
-          for (const range of rangesIn(block, query)) ranges.push(range)
+          for (const range of rangesIn(block, pattern)) ranges.push(range)
         }
       }
       return ranges
@@ -177,6 +309,7 @@ window.__ModuleLoader__.load({
     function createEngine() {
       let ranges = []
       let active = -1
+      let painted = 0
 
       const clearHighlights = () => {
         if (!canHighlight()) return
@@ -293,12 +426,22 @@ window.__ModuleLoader__.load({
         return true
       }
 
-      // Repaint the whole match layer. Only on a new query: up to 4000 ranges.
+      /**
+       * Repaint the whole match layer, and remember how many matches the paint
+       * layer could actually hold. The count published to the bar is
+       * `ranges.length`, so a capped paint is visible as `painted < total`.
+       */
       const paintMatches = () => {
-        if (!canHighlight()) return
+        if (!canHighlight()) {
+          painted = 0
+          return
+        }
         CSS.highlights.delete(MATCH_HIGHLIGHT)
+        painted = 0
         if (ranges.length === 0) return
-        CSS.highlights.set(MATCH_HIGHLIGHT, new Highlight(...ranges.slice(0, 4000)))
+        const paintedRanges = ranges.slice(0, MATCH_PAINT_LIMIT)
+        CSS.highlights.set(MATCH_HIGHLIGHT, new Highlight(...paintedRanges))
+        painted = paintedRanges.length
       }
 
       /**
@@ -371,10 +514,21 @@ window.__ModuleLoader__.load({
         paintActive()
       }
 
+      /** What the bar needs to know about the last search. */
+      const report = () => ({
+        total: ranges.length,
+        painted,
+        painting: !canHighlight() ? 'unsupported' : painted < ranges.length ? 'capped' : 'ok',
+      })
+
       return {
         /** Number of matches from the last search. */
         get size() {
           return ranges.length
+        },
+        /** Number of matches the paint layer could hold. */
+        get painted() {
+          return painted
         },
         /** Zero-based index of the focused match, or -1. */
         get index() {
@@ -382,15 +536,16 @@ window.__ModuleLoader__.load({
         },
         /** Recompute matches for `query` and focus the first visible one. */
         search(query) {
-          ranges = query.trim() === '' ? [] : collect(query.trim())
+          const pattern = compileQueryPattern(query)
+          ranges = pattern === null ? [] : collect(pattern)
           active = -1
           paintMatches()
           if (ranges.length === 0) {
             clearHighlights()
-            return 0
+            return report()
           }
           focusFrom(0, 1)
-          return ranges.length
+          return report()
         },
         /** Focus a match by index, wrapping at both ends, and reveal it. */
         focus(index, step) {
@@ -409,25 +564,133 @@ window.__ModuleLoader__.load({
           }
           ranges = []
           active = -1
+          painted = 0
           clearHighlights()
         },
       }
     }
 
     /** Bar visibility plus the search it currently shows; subscribable by React. */
-    function createController() {
+    function createController(services) {
+      const { timer } = services
       const engine = createEngine()
-      let state = { open: false, query: '', position: 0, total: 0 }
+      let state = { open: false, query: '', position: 0, total: 0, painted: 0, painting: 'ok', history: 'idle' }
       const listeners = new Set()
+      const pollHandles = new Set()
+      let expandToken = 0
+      let focusReturn = null
 
       const publish = patch => {
         state = { ...state, ...patch }
         for (const listener of [...listeners]) listener()
       }
 
+      const reportPatch = report => ({
+        total: report.total,
+        painted: report.painted,
+        painting: report.painting,
+      })
+
+      /** One single-shot timer, tracked so `dispose()` can drop every pending one. */
+      const later = (callback, delay) => {
+        const handle = timer.timeout(() => {
+          pollHandles.delete(handle)
+          callback()
+        }, delay)
+        pollHandles.add(handle)
+        return handle
+      }
+
+      /**
+       * Resolve once the Host stops loading an older page: its status attribute
+       * leaves `loading`/`pendingConsumption`, the control disappears (start of
+       * session), or the settle budget runs out. Polling rather than observing
+       * because the Host mutates a single attribute and a frame of latency is
+       * cheaper than an observer that must be torn down on every search.
+       */
+      const waitForHistory = token => new Promise(resolve => {
+        const startedAt = Date.now()
+        const tick = () => {
+          if (expandToken !== token) {
+            resolve()
+            return
+          }
+          const box = document.querySelector('[data-chat-history]')
+          const status = box === null ? null : box.getAttribute('data-chat-history')
+          const busy = status === 'loading' || status === 'pendingConsumption'
+          if (!busy || Date.now() - startedAt >= HISTORY_SETTLE_MS) {
+            resolve()
+            return
+          }
+          later(tick, 50)
+        }
+        later(tick, 50)
+      })
+
+      /**
+       * Ask the Host for older pages until the query finds something (or the
+       * session starts), and keep the cursor on the match it was on. This is the
+       * deep part of the feature: a match that exists only in unloaded history is
+       * still reachable, and the paging is the Host's own control, not a second
+       * paging implementation.
+       */
+      const expand = async (query, mode) => {
+        if (query.trim() === '') return
+        const token = ++expandToken
+        const anchor = engine.index
+        let rounds = 0
+        while (expandToken === token) {
+          const box = document.querySelector('[data-chat-history]')
+          const button = box === null ? null : box.querySelector('button')
+          const status = box === null ? null : box.getAttribute('data-chat-history')
+          if (status === 'loading' || status === 'pendingConsumption') {
+            await waitForHistory(token)
+            if (expandToken !== token) return
+            continue
+          }
+          if (!shouldLoadOlder({ present: box !== null, disabled: button === null || button.disabled === true, status, rounds })) {
+            publish({ history: box === null ? 'exhausted' : 'idle' })
+            return
+          }
+          publish({ history: 'loading' })
+          rounds += 1
+          button.click()
+          await waitForHistory(token)
+          if (expandToken !== token) return
+          const before = state.total
+          const report = engine.search(query)
+          const delta = report.total - before
+          publish({ ...reportPatch(report), history: 'idle', position: report.total === 0 ? 0 : engine.index + 1 })
+          if (delta > 0) {
+            if (mode === 'previous' && anchor >= 0) {
+              // Older matches are prepended, so the match chronologically before
+              // the anchor sits at `anchor + delta - 1`.
+              engine.focus(anchor + delta - 1, 1)
+              publish({ position: engine.index + 1 })
+            }
+            return
+          }
+        }
+        if (expandToken === token) publish({ history: 'exhausted' })
+      }
+
       const run = query => {
-        const total = engine.search(query)
-        publish({ query, total, position: total === 0 ? 0 : engine.index + 1 })
+        expandToken += 1
+        const report = engine.search(query)
+        publish({ query, history: 'idle', ...reportPatch(report), position: report.total === 0 ? 0 : engine.index + 1 })
+        if (report.total === 0) void expand(query, 'any')
+      }
+
+      /** Text selected inside the transcript, so opening the bar can seed it. */
+      const selectedText = () => {
+        const selection = window.getSelection()
+        if (selection === null || selection.isCollapsed) return null
+        const text = selection.toString().trim()
+        if (text === '' || text.length > 200) return null
+        const anchorNode = selection.anchorNode
+        const host = anchorNode === null ? null : anchorNode.nodeType === Node.ELEMENT_NODE ? anchorNode : anchorNode.parentElement
+        if (host === null || host.closest('[data-chat-flow]') === null) return null
+        return text
       }
 
       return {
@@ -440,15 +703,27 @@ window.__ModuleLoader__.load({
         getSnapshot() {
           return state
         },
-        /** Show the bar, restoring the previous query. */
+        /** Show the bar, seeding the query from a transcript selection. */
         open() {
-          if (!state.open) publish({ open: true })
-          if (state.query.trim() !== '') run(state.query)
+          const seed = selectedText()
+          const query = seed === null ? state.query : seed
+          if (!state.open) {
+            const element = document.activeElement
+            focusReturn = element instanceof HTMLElement ? element : null
+            publish({ open: true, query })
+          } else if (seed !== null) {
+            publish({ query })
+          }
+          if (query.trim() !== '') run(query)
         },
-        /** Hide the bar and clear every highlight. */
+        /** Hide the bar, clear every highlight, and give focus back. */
         close() {
+          expandToken += 1
           engine.clear()
-          publish({ open: false, total: 0, position: 0 })
+          publish({ open: false, total: 0, painted: 0, painting: 'ok', position: 0, history: 'idle' })
+          const target = focusReturn
+          focusReturn = null
+          if (target !== null && target.isConnected) target.focus()
         },
         /** Search a new query from the input. */
         search(query) {
@@ -460,15 +735,25 @@ window.__ModuleLoader__.load({
           engine.focus(engine.index + 1, 1)
           publish({ position: engine.index + 1 })
         },
-        /** Focus the previous match. */
+        /** Focus the previous match, reaching into history past the first one. */
         previous() {
-          if (state.total === 0) return
+          if (state.total === 0) {
+            void expand(state.query, 'previous')
+            return
+          }
           engine.focus(engine.index - 1, -1)
           publish({ position: engine.index + 1 })
+          if (engine.index === state.total - 1) void expand(state.query, 'previous')
         },
-        /** Drop highlights when the owning plugin is disposed. */
+        /** Drop highlights and pending history work when the plugin is disposed. */
         dispose() {
+          expandToken += 1
+          for (const handle of [...pollHandles]) {
+            if (typeof handle.dispose === 'function') handle.dispose()
+          }
+          pollHandles.clear()
           engine.clear()
+          listeners.clear()
         },
       }
     }
@@ -533,15 +818,29 @@ window.__ModuleLoader__.load({
     const CLOSE_ICON = ['M4 4l8 8', 'M12 4l-8 8']
     const SEARCH_ICON = ['M7 2.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z', 'M10.4 10.4L14 14']
 
+    /** Id of the count element the input describes itself with. */
+    const COUNT_ID = 'dfis-count-status'
+
     /** The find bar itself: one overlay entry, rendered only while open. */
     function FindBar(props) {
-      const { controller, t } = props
+      const { controller, timer, t } = props
       const state = useControllerState(controller)
       const [draft, setDraft] = React.useState('')
       const [anchor, setAnchor] = React.useState(null)
       const input = React.useRef(null)
-      const timer = React.useRef(null)
+      const composing = React.useRef(false)
       const wasOpen = React.useRef(false)
+
+      const schedule = React.useMemo(
+        () => timer.debounce(value => {
+          controller.search(value)
+        }, SEARCH_DEBOUNCE_MS),
+        [controller, timer],
+      )
+
+      React.useEffect(() => () => {
+        schedule.dispose()
+      }, [schedule])
 
       React.useEffect(() => {
         if (state.open && !wasOpen.current) {
@@ -567,18 +866,6 @@ window.__ModuleLoader__.load({
         }
       }, [state.open])
 
-      React.useEffect(() => () => {
-        if (timer.current !== null) clearTimeout(timer.current)
-      }, [])
-
-      const schedule = value => {
-        if (timer.current !== null) clearTimeout(timer.current)
-        timer.current = setTimeout(() => {
-          timer.current = null
-          controller.search(value)
-        }, SEARCH_DEBOUNCE_MS)
-      }
-
       const change = event => {
         const value = event.target.value
         setDraft(value)
@@ -586,29 +873,24 @@ window.__ModuleLoader__.load({
       }
 
       const keyDown = event => {
-        if (event.key === 'Enter') {
-          event.preventDefault()
-          if (event.shiftKey) controller.previous()
-          else controller.next()
-          return
-        }
-        if (event.key === 'Escape') {
-          event.preventDefault()
+        const intent = inputIntent(event, composing.current)
+        if (intent === null) return
+        event.preventDefault()
+        if (intent === 'close') {
           event.stopPropagation()
           controller.close()
+          return
         }
+        if (intent === 'next') controller.next()
+        else controller.previous()
       }
 
       if (!state.open) return null
 
       const position = anchor ?? { top: 64, right: 24 }
       const counting = draft.trim() !== ''
-      const label = !counting
-        ? ''
-        : state.total === 0
-          ? t('find.empty')
-          : t('find.count', { position: state.position, total: state.total })
-
+      const label = counting ? t(countParts(state).key, countParts(state).params) : ''
+      const note = noteKey(state)
       const disabled = state.total === 0
 
       return h('div', {
@@ -616,40 +898,50 @@ window.__ModuleLoader__.load({
         role: 'search',
         'data-find-in-session': '',
         'aria-label': t('find.placeholder'),
+        'aria-busy': state.history === 'loading' ? true : undefined,
         style: { top: `${position.top}px`, right: `${position.right}px` },
       },
         h('input', {
           ref: input,
           className: 'dfis-input',
-          type: 'text',
+          type: 'search',
           value: draft,
           placeholder: t('find.placeholder'),
           'aria-label': t('find.placeholder'),
+          'aria-describedby': COUNT_ID,
+          'aria-keyshortcuts': 'Enter Shift+Enter Escape F3',
           'data-find-in-session-input': '',
           autocomplete: 'off',
           spellCheck: false,
           onChange: change,
           onKeyDown: keyDown,
+          onCompositionStart: () => {
+            composing.current = true
+          },
+          onCompositionEnd: () => {
+            composing.current = false
+          },
         }),
-        h('span', { className: 'dfis-count', 'aria-live': 'polite' }, label),
+        h('span', { id: COUNT_ID, className: 'dfis-count', role: 'status' }, label),
+        note !== null && h('span', { className: 'dfis-note' }, t(note)),
         h('span', { className: 'dfis-separator', 'aria-hidden': true }),
         h('button', {
           type: 'button', className: 'dfis-button', disabled,
-          title: t('find.previous'), 'aria-label': t('find.previous'),
+          title: t('find.previous'), 'aria-label': t('find.previous'), 'aria-keyshortcuts': 'Shift+Enter Shift+F3',
           onClick: () => {
             controller.previous()
           },
         }, h(Icon, { paths: UP_ICON })),
         h('button', {
           type: 'button', className: 'dfis-button', disabled,
-          title: t('find.next'), 'aria-label': t('find.next'),
+          title: t('find.next'), 'aria-label': t('find.next'), 'aria-keyshortcuts': 'Enter F3',
           onClick: () => {
             controller.next()
           },
         }, h(Icon, { paths: DOWN_ICON })),
         h('button', {
           type: 'button', className: 'dfis-button',
-          title: t('find.close'), 'aria-label': t('find.close'),
+          title: t('find.close'), 'aria-label': t('find.close'), 'aria-keyshortcuts': 'Escape',
           onClick: () => {
             controller.close()
           },
@@ -665,7 +957,7 @@ window.__ModuleLoader__.load({
       const { controller, t, wide } = props
       const state = useControllerState(controller)
       const label = t('find.sidebar')
-      const counting = state.total > 0
+      const count = countText(state)
       return h('div', { className: 'dfis-entryHost', 'data-rail': wide ? undefined : '' },
         h('button', {
           type: 'button',
@@ -674,7 +966,7 @@ window.__ModuleLoader__.load({
           'data-active': state.open ? '' : undefined,
           title: wide ? t('find.sidebarHint') : `${label} (Ctrl+F)`,
           'aria-label': label,
-          'aria-keyshortcuts': 'Control+F',
+          'aria-keyshortcuts': 'Control+F Meta+F',
           onClick: () => {
             if (controller.getSnapshot().open) controller.close()
             else controller.open()
@@ -682,22 +974,27 @@ window.__ModuleLoader__.load({
         },
           h(Icon, { paths: SEARCH_ICON }),
           wide && h('span', { className: 'dfis-entryLabel' }, label),
-          wide && h('span', { className: 'dfis-entryCount' }, counting ? String(state.total) : ''),
+          wide && h('span', { className: 'dfis-entryCount' }, count),
         ))
     }
 
     return {
       /** Client services this module needs. */
-      inject: ['slots', 'locale'],
+      inject: ['slots', 'locale', 'theme', 'timer'],
       /**
-       * Register the find-bar overlay entry, its stylesheet, and the Ctrl+F global
-       * listener. Everything is released with the plugin.
+       * Register the find-bar overlay entry, its stylesheet, its colour tokens,
+       * and the Ctrl+F global listener. Everything is released with the plugin.
        * @param ctx - client root context.
        */
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'find-in-session: dictionaries')
         const t = ctx.locale.bind(NS)
-        const controller = createController()
+        const controller = createController({ timer: ctx.timer })
+
+        ctx.effect(
+          () => ctx.theme.overrideTokens('@local/dsh-find-in-session', HIGHLIGHT_TOKENS),
+          'find-in-session: highlight tokens',
+        )
 
         ctx.effect(() => {
           const tag = document.createElement('style')
@@ -714,7 +1011,7 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('shell.overlay', () => ctx.slots.register({
           name: 'shell.overlay',
           id: 'find-in-session.bar',
-          inject: () => ({ controller, t }),
+          inject: () => ({ controller, t, timer: ctx.timer }),
         }, FindBar))
 
         // The sidebar-foot entry is the discoverable way in; Ctrl+F stays as
@@ -730,14 +1027,24 @@ window.__ModuleLoader__.load({
           const keyDown = event => {
             if (event.defaultPrevented || event.isComposing) return
             const modifier = event.ctrlKey || event.metaKey
-            if (!modifier || event.altKey) return
             const target = event.target instanceof Element ? event.target : null
             if (target !== null && target.closest('.xterm') !== null) return
             const open = controller.getSnapshot().open
 
+            // F3 / Shift+F3 is the browser's other next/previous pair; it needs
+            // no modifier, so it is checked before the Ctrl/Cmd gate.
+            if (event.key === 'F3' && open && !event.altKey) {
+              event.preventDefault()
+              if (event.shiftKey) controller.previous()
+              else controller.next()
+              return
+            }
+            if (!modifier || event.altKey) return
+
             if (event.code === 'KeyF' && !event.shiftKey) {
               event.preventDefault()
-              // 开关式：未打开则打开，已打开则关闭（浏览器里 Ctrl+F 是重新聚焦，这里按需求做成切换）
+              // Toggle: closed opens, open closes. Browsers re-focus instead,
+              // but this product asked for a switch.
               if (open) controller.close()
               else controller.open()
               return
