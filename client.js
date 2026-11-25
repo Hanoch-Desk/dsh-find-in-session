@@ -13,6 +13,16 @@ window.__ModuleLoader__.load({
     /** Above DSH's own overlay entries (z-index 20) and below app dialogs. */
     const BAR_Z_INDEX = 40
     const SEARCH_DEBOUNCE_MS = 20
+    /**
+     * Chromium commits an IME candidate with `compositionend` *before* the
+     * confirming `keydown`, and that keydown reports `isComposing === false`.
+     * Without a short grace window the Enter that only accepts the candidate
+     * would jump to the next match — and be `preventDefault`ed, sometimes
+     * discarding the commit — for every phrase typed through an IME.
+     */
+    const IME_COMMIT_GUARD_MS = 60
+    /** How long the count is allowed to settle before it is announced. */
+    const ANNOUNCE_DELAY_MS = 500
 
     // #region pure-contracts
     /**
@@ -86,11 +96,22 @@ window.__ModuleLoader__.load({
      * What one key press on the find input means.
      * @param {{ key: string, shiftKey?: boolean, isComposing?: boolean, keyCode?: number }} event
      * @param {boolean} composing - the input is inside an IME composition.
+     * @param {number | undefined} committedAt - when the last composition ended.
+     * @param {number | undefined} now - current time, for the commit guard.
      * @returns {'next' | 'previous' | 'close' | null}
      */
-    function inputIntent(event, composing) {
+    function inputIntent(event, composing, committedAt, now) {
       const typing = composing === true || event.isComposing === true || event.keyCode === 229
       if (typing) return null
+      // The Enter that commits an IME candidate arrives after `compositionend`
+      // with `isComposing === false`; treat a same-moment Enter as part of the
+      // commit instead of as "next match" (see IME_COMMIT_GUARD_MS).
+      const confirmOnly =
+        event.key === 'Enter' &&
+        typeof committedAt === 'number' &&
+        typeof now === 'number' &&
+        now - committedAt < IME_COMMIT_GUARD_MS
+      if (confirmOnly) return null
       if (event.key === 'Enter' || event.key === 'F3') return event.shiftKey === true ? 'previous' : 'next'
       if (event.key === 'Escape') return 'close'
       return null
@@ -126,14 +147,29 @@ window.__ModuleLoader__.load({
 
     /**
      * The secondary note beside the count, or `null` when there is nothing a
-     * person needs to be told.
-     * @param {{ history: string, painting: string, total: number }} state
+     * person needs to be told. Each branch is a different epistemic state and
+     * must not be collapsed into another one: "no older history exists", "we
+     * stopped before we ran out", and "this page has no conversation at all"
+     * are three different answers to the same question.
+     * @param {{ history: string, painting: string, total: number, inConversation: boolean }} state
      */
     function noteKey(state) {
+      if (state.inConversation === false) return 'find.noConversation'
       if (state.history === 'loading' && state.total > 0) return 'find.searching'
       if (state.painting === 'unsupported') return 'find.unsupported'
+      if (state.history === 'budget' && state.total === 0) return 'find.budgetExhausted'
       if (state.history === 'exhausted' && state.total === 0) return 'find.historyStart'
       return null
+    }
+
+    /**
+     * Parameters for the note returned by `noteKey`. Only the budget branch has
+     * any: it has to name how many pages were tried, because "we stopped after 8
+     * pages" and "this is the start of the conversation" are different answers.
+     * @param {{ rounds: number }} state
+     */
+    function noteParams(state) {
+      return { rounds: state.rounds }
     }
 
     /** Match count shown on the sidebar entry ('' when there is none). */
@@ -151,6 +187,8 @@ window.__ModuleLoader__.load({
       'find.capped': '{position}/{total}，已高亮 {painted} 处',
       'find.unsupported': '当前浏览器不支持高亮，仅定位',
       'find.historyStart': '已到会话开头',
+      'find.budgetExhausted': '已向前翻 {rounds} 页仍未找到，判定停止',
+      'find.noConversation': '当前页面没有会话',
       'find.previous': '上一处（Shift+Enter）',
       'find.next': '下一处（Enter）',
       'find.close': '关闭（Esc）',
@@ -165,6 +203,8 @@ window.__ModuleLoader__.load({
       'find.capped': '{position}/{total}, highlighting {painted}',
       'find.unsupported': 'Highlighting is unavailable; jumping only',
       'find.historyStart': 'Reached the start of the conversation',
+      'find.budgetExhausted': 'Stopped after {rounds} earlier pages with no match',
+      'find.noConversation': 'This page has no conversation',
       'find.previous': 'Previous match (Shift+Enter)',
       'find.next': 'Next match (Enter)',
       'find.close': 'Close (Esc)',
@@ -173,26 +213,27 @@ window.__ModuleLoader__.load({
     }
 
     const styles = `
-.dfis-bar{position:fixed;z-index:${BAR_Z_INDEX};display:flex;align-items:center;gap:4px;padding:5px 6px;box-sizing:border-box;background:var(--dsw-alias-bg-layer-1,#fff);border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.16);font-family:var(--dsw-font-family,system-ui);color:var(--dsw-alias-label-primary,#1a1a1a);pointer-events:auto;-webkit-app-region:no-drag;app-region:no-drag}
+.dfis-bar{position:fixed;z-index:${BAR_Z_INDEX};display:flex;align-items:center;gap:4px;padding:5px 6px;box-sizing:border-box;max-width:calc(100vw - 24px);background:var(--dsw-alias-bg-layer-1,#fff);border:.5px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));border-radius:var(--dsw-radius-md,12px);box-shadow:var(--dsw-elevation-panel,0 0 0 .5px rgba(0,0,0,.14),0 3px 8px 0 rgba(0,0,0,.03),0 0 16px 0 rgba(0,0,0,.02));font-family:var(--dsw-font-family,system-ui);color:var(--dsw-alias-label-primary,#1a1a1a);pointer-events:auto;-webkit-app-region:no-drag;app-region:no-drag}
 .dfis-bar *{-webkit-app-region:no-drag;app-region:no-drag}
-.dfis-input{width:170px;padding:2px 4px;border:0;outline:0;background:transparent;font-family:inherit;font-size:13px;line-height:18px;color:inherit}
-.dfis-input::placeholder{color:var(--dsw-alias-label-tertiary,#8a8a8a)}
-.dfis-count{min-width:46px;text-align:center;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-variant-numeric:tabular-nums;white-space:nowrap}
-.dfis-note{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#8a8a8a)}
-.dfis-button{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#5f5f5f);cursor:pointer}
+.dfis-input{flex:1 1 170px;width:auto;min-width:0;padding:2px 4px;border:0;outline:0;background:transparent;font-family:inherit;font-size:13px;line-height:18px;color:inherit}
+.dfis-input::placeholder{color:var(--dsw-alias-label-secondary,#61666b)}
+.dfis-count{flex:none;min-width:46px;text-align:center;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,#61666b);font-variant-numeric:tabular-nums;white-space:nowrap}
+.dfis-note{flex:0 1 auto;min-width:0;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,#61666b)}
+.dfis-button{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--dsw-alias-label-secondary,#61666b);cursor:pointer}
 .dfis-button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}
-.dfis-button:disabled{color:var(--dsw-alias-label-tertiary,#b4b4b4);cursor:default}
-.dfis-button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#247bbf);outline-offset:1px}
+.dfis-button:disabled{color:var(--dsw-alias-label-tertiary,#81858c);cursor:default}
+.dfis-button:focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#4176e6));outline-offset:1px}
 .dfis-separator{width:.5px;height:16px;background:var(--dsw-alias-border-l2,rgba(0,0,0,.14));flex:none}
-.dfis-entry{display:inline-flex;align-items:center;gap:8px;width:calc(100% + 4px);height:42px;margin:0 -2px;padding:0 10px 0 8px;border:0;border-radius:12px;background:transparent;color:var(--dsw-alias-label-primary,#1a1a1a);font-family:inherit;font-size:14px;cursor:pointer}
+.dfis-entry{display:inline-flex;align-items:center;gap:8px;width:100%;height:32px;margin:0;padding:0 9px;border:0;border-inline:3px solid transparent;border-radius:var(--dsw-radius-md,12px);background:transparent;color:var(--dsw-alias-label-primary,#1a1a1a);font-family:inherit;font-size:14px;cursor:pointer}
 .dfis-entry:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}
 .dfis-entry[data-active]{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}
-.dfis-entry:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#247bbf);outline-offset:-2px}
+.dfis-entry:focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#4176e6));outline-offset:-2px}
 .dfis-entryLabel{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dfis-entryCount{flex:none;margin-left:auto;color:var(--dsw-alias-label-tertiary,#8a8a8a);font-size:12px;line-height:16px;font-variant-numeric:tabular-nums}
-.dfis-rail{width:36px;height:36px;padding:0;border-radius:50%;justify-content:center}
+.dfis-entryCount{flex:none;margin-left:auto;color:var(--dsw-alias-label-secondary,#61666b);font-size:12px;line-height:16px;font-variant-numeric:tabular-nums}
+.dfis-rail{width:36px;height:36px;padding:0;border-inline:0;border-radius:var(--dsw-radius-md,12px);justify-content:center}
 .dfis-entryHost{display:flex;width:100%}
 .dfis-entryHost[data-rail]{width:36px;justify-content:center}
+.dfis-sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
 *::highlight(${MATCH_HIGHLIGHT}){background-color:var(--dfis-match-bg,#fff3bf);color:var(--dfis-match-fg,#1b1b1b)}
 *::highlight(${ACTIVE_HIGHLIGHT}){background-color:var(--dfis-active-bg,#ffb020);color:var(--dfis-active-fg,#1b1b1b)}
 `
@@ -570,15 +611,39 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Is there a conversation on screen at all? The bar is frame-wide. */
+    function conversationPresent() {
+      return document.querySelector('[data-chat-flow]') !== null || document.querySelector('[data-chat-node-key]') !== null
+    }
+
     /** Bar visibility plus the search it currently shows; subscribable by React. */
     function createController(services) {
       const { timer } = services
       const engine = createEngine()
-      let state = { open: false, query: '', position: 0, total: 0, painted: 0, painting: 'ok', history: 'idle' }
+      let state = {
+        open: false,
+        query: '',
+        position: 0,
+        total: 0,
+        painted: 0,
+        painting: 'ok',
+        history: 'idle',
+        /** How many earlier pages the last expand attempt asked for. */
+        rounds: 0,
+        inConversation: true,
+        /** Bumped when Ctrl+F should re-focus the existing field. */
+        focusRequest: 0,
+      }
       const listeners = new Set()
       const pollHandles = new Set()
       let expandToken = 0
       let focusReturn = null
+      /**
+       * True between clicking the Host's "load earlier" button and the Host
+       * reflecting it in `data-chat-history`; the attribute alone cannot tell
+       * a fresh click from an idle transcript.
+       */
+      let roundInFlight = false
 
       const publish = patch => {
         state = { ...state, ...patch }
@@ -649,18 +714,25 @@ window.__ModuleLoader__.load({
             continue
           }
           if (!shouldLoadOlder({ present: box !== null, disabled: button === null || button.disabled === true, status, rounds })) {
-            publish({ history: box === null ? 'exhausted' : 'idle' })
+            // Three different answers, three different strings: no control at
+            // all means the session starts here; a still-enabled control after
+            // the round budget means we stopped early and do not know.
+            if (box === null) publish({ history: 'exhausted', rounds })
+            else if (rounds >= HISTORY_MAX_ROUNDS) publish({ history: 'budget', rounds })
+            else publish({ history: 'idle', rounds })
             return
           }
-          publish({ history: 'loading' })
+          publish({ history: 'loading', rounds })
           rounds += 1
+          roundInFlight = true
           button.click()
           await waitForHistory(token)
+          roundInFlight = false
           if (expandToken !== token) return
           const before = state.total
           const report = engine.search(query)
           const delta = report.total - before
-          publish({ ...reportPatch(report), history: 'idle', position: report.total === 0 ? 0 : engine.index + 1 })
+          publish({ ...reportPatch(report), history: 'idle', rounds, position: report.total === 0 ? 0 : engine.index + 1 })
           if (delta > 0) {
             if (mode === 'previous' && anchor >= 0) {
               // Older matches are prepended, so the match chronologically before
@@ -674,11 +746,75 @@ window.__ModuleLoader__.load({
         if (expandToken === token) publish({ history: 'exhausted' })
       }
 
+      /**
+       * A round that was abandoned can still leave the Host mid-page: the
+       * click was already dispatched, and once that page lands nothing
+       * re-runs the search, so the count stays wrong forever. A search that
+       * starts while a page is in flight therefore waits for it and re-runs
+       * once. `roundInFlight` covers the gap between the click and the Host
+       * publishing `loading`, where the status attribute still reads `idle`.
+       */
+      const settle = token => new Promise(resolve => {
+        const startedAt = Date.now()
+        const tick = () => {
+          if (expandToken !== token) {
+            resolve()
+            return
+          }
+          const box = document.querySelector('[data-chat-history]')
+          const status = box === null ? null : box.getAttribute('data-chat-history')
+          const busy = roundInFlight || status === 'loading' || status === 'pendingConsumption'
+          if (!busy || Date.now() - startedAt >= HISTORY_SETTLE_MS) {
+            resolve()
+            return
+          }
+          later(tick, 50)
+        }
+        later(tick, 50)
+      })
+
+      const resync = query => {
+        const box = document.querySelector('[data-chat-history]')
+        const status = box === null ? null : box.getAttribute('data-chat-history')
+        const busy = roundInFlight || status === 'loading' || status === 'pendingConsumption'
+        if (!busy) return
+        const token = ++expandToken
+        const anchor = engine.index
+        const before = state.total
+        publish({ history: 'loading' })
+        void (async () => {
+          await settle(token)
+          if (expandToken !== token) return
+          const report = engine.search(query)
+          if (report.total === 0) {
+            publish({ ...reportPatch(report), history: 'idle', position: 0 })
+            void expand(query, 'any')
+            return
+          }
+          // Older matches are prepended, so the followed match shifts by the
+          // number of matches that appeared before it.
+          const delta = report.total - before
+          engine.focus(anchor < 0 ? 0 : anchor + delta, 1)
+          publish({ ...reportPatch(report), history: 'idle', position: engine.index + 1 })
+        })()
+      }
+
       const run = query => {
         expandToken += 1
-        const report = engine.search(query)
-        publish({ query, history: 'idle', ...reportPatch(report), position: report.total === 0 ? 0 : engine.index + 1 })
-        if (report.total === 0) void expand(query, 'any')
+        const present = conversationPresent()
+        const report = present ? engine.search(query) : { total: 0, painted: 0, painting: 'ok' }
+        publish({
+          query,
+          history: 'idle',
+          inConversation: present,
+          ...reportPatch(report),
+          position: report.total === 0 ? 0 : engine.index + 1,
+        })
+        if (!present || report.total > 0) {
+          if (present) resync(query)
+          return
+        }
+        void expand(query, 'any')
       }
 
       /** Text selected inside the transcript, so opening the bar can seed it. */
@@ -707,14 +843,18 @@ window.__ModuleLoader__.load({
         open() {
           const seed = selectedText()
           const query = seed === null ? state.query : seed
+          const present = conversationPresent()
           if (!state.open) {
             const element = document.activeElement
             focusReturn = element instanceof HTMLElement ? element : null
-            publish({ open: true, query })
-          } else if (seed !== null) {
-            publish({ query })
+            publish({ open: true, query, inConversation: present })
+          } else {
+            // Second Ctrl+F while open: refocus and select, the way a browser
+            // does, instead of closing the bar under the user.
+            publish({ focusRequest: state.focusRequest + 1, ...(seed === null ? {} : { query }) })
           }
-          if (query.trim() !== '') run(query)
+          if (query.trim() !== '' && present) run(query)
+          else if (!present) publish({ total: 0, painted: 0, painting: 'ok', position: 0, history: 'idle' })
         },
         /** Hide the bar, clear every highlight, and give focus back. */
         close() {
@@ -818,8 +958,10 @@ window.__ModuleLoader__.load({
     const CLOSE_ICON = ['M4 4l8 8', 'M12 4l-8 8']
     const SEARCH_ICON = ['M7 2.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9z', 'M10.4 10.4L14 14']
 
-    /** Id of the count element the input describes itself with. */
-    const COUNT_ID = 'dfis-count-status'
+    /** Id of the element the input describes itself with. */
+    const STATUS_ID = 'dfis-status'
+    /** Id of the off-screen live region that speaks the settled state. */
+    const ANNOUNCE_ID = 'dfis-announcer'
 
     /** The find bar itself: one overlay entry, rendered only while open. */
     function FindBar(props) {
@@ -827,9 +969,13 @@ window.__ModuleLoader__.load({
       const state = useControllerState(controller)
       const [draft, setDraft] = React.useState('')
       const [anchor, setAnchor] = React.useState(null)
+      const [announcement, setAnnouncement] = React.useState('')
       const input = React.useRef(null)
       const composing = React.useRef(false)
+      /** When the last IME composition ended, for the commit guard. */
+      const committedAt = React.useRef(undefined)
       const wasOpen = React.useRef(false)
+      const seenFocusRequest = React.useRef(state.focusRequest)
 
       const schedule = React.useMemo(
         () => timer.debounce(value => {
@@ -838,9 +984,38 @@ window.__ModuleLoader__.load({
         [controller, timer],
       )
 
+      /**
+       * One live region for the whole state, updated on a trailing delay.
+       * A polite region fed by a 20ms debounce would announce every keystroke
+       * ("1/5", "1/12", "1/40"), which makes the field unusable with a screen
+       * reader; 500ms trailing is the smallest delay that speaks the settled
+       * answer instead of each intermediate one.
+       */
+      const announce = React.useMemo(
+        () => timer.debounce(text => {
+          setAnnouncement(text)
+        }, ANNOUNCE_DELAY_MS),
+        [timer],
+      )
+
       React.useEffect(() => () => {
         schedule.dispose()
-      }, [schedule])
+        announce.dispose()
+      }, [schedule, announce])
+
+      const statusText = (snapshot, query) => {
+        const counting = query.trim() !== ''
+        const parts = counting ? countParts(snapshot) : null
+        const note = noteKey(snapshot)
+        const pieces = []
+        if (parts !== null) pieces.push(t(parts.key, parts.params))
+        if (note !== null) pieces.push(t(note, noteParams(snapshot)))
+        return pieces.join('，')
+      }
+
+      React.useEffect(() => {
+        if (state.open) announce(statusText(state, state.query))
+      }, [state.open, state.total, state.position, state.painted, state.painting, state.history, state.rounds, state.inConversation])
 
       React.useEffect(() => {
         if (state.open && !wasOpen.current) {
@@ -854,15 +1029,42 @@ window.__ModuleLoader__.load({
         wasOpen.current = state.open
       }, [state.open, state.query])
 
+      // Second Ctrl+F while open: refocus and select, the browser convention,
+      // rather than closing the bar the user is typing in.
+      React.useEffect(() => {
+        if (state.focusRequest === seenFocusRequest.current) return
+        seenFocusRequest.current = state.focusRequest
+        const element = input.current
+        if (element !== null) {
+          element.focus()
+          element.select()
+        }
+      }, [state.focusRequest])
+
+      /**
+       * Re-measure on every layout change, not only on `window.resize`: the
+       * chat column is a grid track that narrows when the right rail opens or
+       * the sidebar collapses, and neither of those fires a resize event.
+       */
       React.useEffect(() => {
         if (!state.open) return undefined
+        let observer = null
         const measure = () => {
           setAnchor(barAnchor())
+          const column = document.querySelector('[data-chat-flow]')
+          if (observer !== null) observer.disconnect()
+          if (column !== null && typeof ResizeObserver !== 'undefined') {
+            observer = new ResizeObserver(measure)
+            observer.observe(column)
+            const viewport = scrollAncestorOf(column)
+            if (viewport !== null) observer.observe(viewport)
+          }
         }
         measure()
         window.addEventListener('resize', measure)
         return () => {
           window.removeEventListener('resize', measure)
+          if (observer !== null) observer.disconnect()
         }
       }, [state.open])
 
@@ -873,7 +1075,7 @@ window.__ModuleLoader__.load({
       }
 
       const keyDown = event => {
-        const intent = inputIntent(event, composing.current)
+        const intent = inputIntent(event, composing.current, committedAt.current, Date.now())
         if (intent === null) return
         event.preventDefault()
         if (intent === 'close') {
@@ -897,8 +1099,6 @@ window.__ModuleLoader__.load({
         className: 'dfis-bar',
         role: 'search',
         'data-find-in-session': '',
-        'aria-label': t('find.placeholder'),
-        'aria-busy': state.history === 'loading' ? true : undefined,
         style: { top: `${position.top}px`, right: `${position.right}px` },
       },
         h('input', {
@@ -908,7 +1108,7 @@ window.__ModuleLoader__.load({
           value: draft,
           placeholder: t('find.placeholder'),
           'aria-label': t('find.placeholder'),
-          'aria-describedby': COUNT_ID,
+          'aria-describedby': STATUS_ID,
           'aria-keyshortcuts': 'Enter Shift+Enter Escape F3',
           'data-find-in-session-input': '',
           autocomplete: 'off',
@@ -920,10 +1120,20 @@ window.__ModuleLoader__.load({
           },
           onCompositionEnd: () => {
             composing.current = false
+            committedAt.current = Date.now()
           },
         }),
-        h('span', { id: COUNT_ID, className: 'dfis-count', role: 'status' }, label),
-        note !== null && h('span', { className: 'dfis-note' }, t(note)),
+        // The visible count is not a live region: it changes on every
+        // keystroke. The settled sentence is announced through ANNOUNCE_ID.
+        h('span', { id: STATUS_ID, className: 'dfis-count' }, label),
+        note !== null && h('span', { className: 'dfis-note' }, t(note, noteParams(state))),
+        h('span', {
+          id: ANNOUNCE_ID,
+          className: 'dfis-sr',
+          role: 'status',
+          'aria-live': 'polite',
+          'aria-atomic': 'true',
+        }, announcement),
         h('span', { className: 'dfis-separator', 'aria-hidden': true }),
         h('button', {
           type: 'button', className: 'dfis-button', disabled,
@@ -966,6 +1176,7 @@ window.__ModuleLoader__.load({
           'data-active': state.open ? '' : undefined,
           title: wide ? t('find.sidebarHint') : `${label} (Ctrl+F)`,
           'aria-label': label,
+          'aria-expanded': state.open ? 'true' : 'false',
           'aria-keyshortcuts': 'Control+F Meta+F',
           onClick: () => {
             if (controller.getSnapshot().open) controller.close()
@@ -1043,10 +1254,10 @@ window.__ModuleLoader__.load({
 
             if (event.code === 'KeyF' && !event.shiftKey) {
               event.preventDefault()
-              // Toggle: closed opens, open closes. Browsers re-focus instead,
-              // but this product asked for a switch.
-              if (open) controller.close()
-              else controller.open()
+              // Browsers re-focus and select on a second Ctrl+F. Closing here
+              // would make the bar vanish under a user who pressed the shortcut
+              // twice — and reopening would silently re-run the old query.
+              controller.open()
               return
             }
             if (event.code === 'KeyG' && open) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Read a single file out of an Electron asar archive, without dependencies.
+ * Read an Electron asar archive, without dependencies.
  *
  * Electron's asar layout: an 8-byte pickle prefix, a 4-byte UInt32LE header
  * length, then a JSON directory tree, then the concatenated file payloads.
@@ -36,6 +36,30 @@ function indexTree(buf) {
   }
   walk(header, '')
   return { files, dataStart: 8 + headerSize }
+}
+
+/**
+ * Open an archive once and read many entries out of it.
+ *
+ * Reading one entry at a time re-reads the whole file, which is fine for a
+ * single lookup and hopeless for a scan of twenty thousand entries.
+ * @param {string} asarPath - path of the `.asar` archive.
+ */
+export function openAsar(asarPath) {
+  const buf = readFileSync(asarPath)
+  const { files, dataStart } = indexTree(buf)
+  return {
+    /** Every packed entry as `[path, entry]`, in archive order. */
+    entries: () => [...files.entries()],
+    /** One entry's bytes as UTF-8, or `null` when it is unpacked or missing. */
+    read(entryPath) {
+      const entry = files.get(entryPath)
+      if (entry === undefined) throw new Error(`asar entry not found: ${entryPath}`)
+      if (entry.unpacked) return null
+      const start = dataStart + Number(entry.offset)
+      return buf.subarray(start, start + Number(entry.size)).toString('utf8')
+    },
+  }
 }
 
 /**

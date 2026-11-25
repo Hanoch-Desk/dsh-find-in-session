@@ -52,9 +52,17 @@ and that this plugin calls no paging API of its own.
 ## Colours follow the theme
 
 The four highlight colours are registered as theme tokens through
-`theme.overrideTokens`, so light and dark schemes both stay legible; every
-foreground/background pair clears WCAG AA (4.5:1), and `verify.mjs` recomputes
-the ratios.
+`theme.overrideTokens`, so light and dark schemes both stay legible. The bar's
+own text is not painted by this plugin at all — it uses the Host's
+`--dsw-alias-label-*` tokens — and `verify.mjs` recomputes both sets of ratios
+from the values in the installed build:
+
+- highlight pairs: worst is the active match in dark at 6.45:1;
+- bar and sidebar chrome: worst is the secondary label on the sidebar at 5.55:1.
+
+Every one of those clears WCAG AA (4.5:1). Tertiary label colour is used only on
+disabled buttons, because in the light scheme it is 3.71:1 — readable enough for
+something you cannot click, not enough for a sentence you have to read.
 
 ## What it deliberately does not do
 
@@ -62,7 +70,20 @@ the ratios.
   has actually rendered is matched. Raw tool-call arguments, request headers and
   anything else the transcript never draws are out of reach — the Host's own
   session search covers those, and this bar does not pretend to.
+- **It does not search inside controls.** Match candidates come from text nodes,
+  and any node underneath `button`, `input`, `select`, `option`, `textarea`,
+  `script`, `style`, `[aria-hidden="true"]`, `[data-chat-history]`,
+  `[data-chat-turn-spacer]` or `[data-text-interaction-surface]` is skipped. The
+  labels on the transcript's own buttons are therefore not matchable. They are
+  chrome, not conversation, and treating them as searchable would make the count
+  depend on which controls happened to be on screen.
 - **It does not cross sessions.** One conversation at a time.
+- **The bar cannot be dragged, docked or collapsed.** It rides a fixed offset
+  below the conversation header, right-aligned to the chat column, and re-anchors
+  itself when the column is resized (opening the right rail, collapsing the
+  sidebar, dragging a splitter) — none of which fires a `window.resize`, so a
+  `ResizeObserver` watches the column instead. It can overlap the top of the
+  transcript; that is the cost of not adding a container to the host layout.
 - **It does not add a match list, a settings page, a second search box or a
   separate window.** One bar, one sidebar entry, the same shortcuts.
 - **It does not implement regex, whole-word or case-sensitive modes.** The Host

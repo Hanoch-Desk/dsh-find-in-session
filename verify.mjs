@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import vm from 'node:vm'
 
-import { readAsarFile } from './tools/asar-read.mjs'
+import { openAsar, readAsarFile } from './tools/asar-read.mjs'
 import { decompressAllFrames } from './tools/zstd-frames.mjs'
 
 const ROOT = new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/u, '$1')
@@ -124,21 +124,74 @@ function loadRealEvents() {
   return { events, path: best.path }
 }
 
-/** WCAG 2.x relative luminance of a #rrggbb colour. */
-function luminance(hex) {
-  const value = hex.replace('#', '')
-  const channel = offset => {
-    const raw = Number.parseInt(value.slice(offset, offset + 2), 16) / 255
-    return raw <= 0.03928 ? raw / 12.92 : ((raw + 0.055) / 1.055) ** 2.4
+/** Parse `#rrggbb` or `rgb(r, g, b)` into `[r, g, b]`, or null. */
+function parseColor(value) {
+  const text = String(value).trim()
+  const hex = /^#([0-9a-f]{6})$/iu.exec(text)
+  if (hex !== null) {
+    const digits = hex[1]
+    return [0, 2, 4].map(offset => Number.parseInt(digits.slice(offset, offset + 2), 16))
   }
-  return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
+  const rgb = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/iu.exec(text)
+  if (rgb !== null) return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])]
+  return null
 }
 
-/** WCAG contrast ratio between two #rrggbb colours. */
+/** WCAG 2.x relative luminance of a colour. */
+function luminance(colour) {
+  const channels = typeof colour === 'string' ? parseColor(colour) : colour
+  if (channels === null) throw new Error(`not a colour: ${colour}`)
+  const linear = channels.map(value => {
+    const raw = value / 255
+    return raw <= 0.03928 ? raw / 12.92 : ((raw + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+}
+
+/** WCAG contrast ratio between two colours. */
 function contrast(a, b) {
   const la = luminance(a)
   const lb = luminance(b)
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+}
+
+/**
+ * The published design tokens, read out of the Host build itself.
+ *
+ * The stylesheet declares each scheme twice — first the `--dsw-static-*`
+ * primitives, later the `--dsw-alias-*` names that point at them — so every
+ * `body { … }` block contributes to light and every `body[data-ds-dark-theme] { … }`
+ * block to dark. Aliases resolve through `var(...)` chains until a colour appears.
+ */
+function loadHostTokens() {
+  const css = readAsarFile(ASAR, 'dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/src/styles/design-platform.css')
+  if (css === null || css === undefined) throw new Error('design-platform.css not found in the installed build')
+  const schemes = { light: new Map(), dark: new Map() }
+  for (const header of css.matchAll(/(?:^|\n)[ \t]*body(\[data-ds-dark-theme\])?\s*\{/gu)) {
+    const from = header.index + header[0].length
+    let depth = 1
+    let cursor = from
+    while (cursor < css.length && depth > 0) {
+      const char = css[cursor]
+      if (char === '{') depth += 1
+      else if (char === '}') depth -= 1
+      cursor += 1
+    }
+    const target = schemes[header[1] === undefined ? 'light' : 'dark']
+    for (const decl of css.slice(from, cursor - 1).matchAll(/(--dsw-[a-z0-9-]+)\s*:\s*([^;]+);/gu)) {
+      target.set(decl[1], decl[2].trim())
+    }
+  }
+  const resolve = (scheme, name) => {
+    let value = schemes[scheme].get(name)
+    for (let depth = 0; depth < 8 && typeof value === 'string'; depth += 1) {
+      const inner = /^var\(\s*(--[a-z0-9-]+)/iu.exec(value)
+      if (inner === null) break
+      value = schemes[scheme].get(inner[1])
+    }
+    return parseColor(value ?? '')
+  }
+  return { resolve, sizes: { light: schemes.light.size, dark: schemes.dark.size } }
 }
 
 // ── 1. Matching semantics agree with the Host ────────────────────────────────
@@ -367,6 +420,41 @@ check(
   'theme.overrideTokens 契约要求 { light, dark }，裸字符串会抛 teaching error',
 )
 
+// A token name the app never defines is invisible: `var(--x, #fallback)` keeps
+// painting the fallback forever. So every property client.js reads is checked
+// against the definitions in the installed build.
+const hostDefinedNames = (() => {
+  const archive = openAsar(ASAR)
+  const defined = new Map()
+  for (const [path, entry] of archive.entries()) {
+    if (entry.unpacked) continue
+    if (Number(entry.size) > 4_000_000) continue
+    if (!/\.(cjs|css|js|mjs|ts|tsx?)$/u.test(path)) continue
+    const text = archive.read(path)
+    if (text === null) continue
+    const site = path.replace('dsh/node_modules/@deepseek-ai/', '')
+    for (const match of text.matchAll(
+      /(--d(?:sw|sh)-[a-z0-9-]+)\s*:|setProperty\(\s*['"](--d(?:sw|sh)-[a-z0-9-]+)['"]\s*,/gu,
+    )) {
+      const name = match[1] ?? match[2]
+      if (!defined.has(name)) defined.set(name, site)
+    }
+  }
+  return defined
+})()
+
+const readNames = new Set([
+  ...[...clientSource.matchAll(/var\((--d(?:sw|sh)-[a-z0-9-]+)/gu)].map(match => match[1]),
+  ...[...clientSource.matchAll(/getPropertyValue\(\s*['"](--d(?:sw|sh)-[a-z0-9-]+)['"]/gu)].map(match => match[1]),
+])
+const undefinedNames = [...readNames].filter(name => !hostDefinedNames.has(name))
+check(
+  'D4 client.js 读取的每个自定义属性都是宿主真正定义过的',
+  undefinedNames.length === 0,
+  `${readNames.size} 个属性，未定义: [${undefinedNames}]`,
+  '宿主构建里的声明点（含 preload 的 setProperty）是唯一权威',
+)
+
 const highlightRules = [...clientSource.matchAll(/\*::highlight\([^)]*\)\{([^}]*)\}/gu)].map(match => match[1])
 check(
   'D4 ::highlight 规则只引用令牌，不写死颜色',
@@ -395,6 +483,53 @@ check(
   'WCAG 2.x 相对亮度公式，可独立复算',
 )
 
+// The bar's own chrome carries the honesty caveats ("highlighting 4000 of 5000",
+// "this page has no conversation"), so it has to clear AA too. Its colours are
+// Host tokens, so the ratios are computed from the values in the installed build
+// rather than from numbers copied into this file.
+const hostTokens = loadHostTokens()
+const chromePairs = [
+  ['bar count/note (label-secondary)', '--dsw-alias-label-secondary', '--dsw-alias-bg-layer-1'],
+  ['bar input text (label-primary)', '--dsw-alias-label-primary', '--dsw-alias-bg-layer-1'],
+  ['sidebar count (label-secondary)', '--dsw-alias-label-secondary', '--dsw-specific-sidebar-fill'],
+  ['sidebar label (label-primary)', '--dsw-alias-label-primary', '--dsw-specific-sidebar-fill'],
+]
+const chromeReport = []
+let chromeOk = true
+for (const [label, fgName, bgName] of chromePairs) {
+  for (const mode of ['light', 'dark']) {
+    const fg = hostTokens.resolve(mode, fgName)
+    const bg = hostTokens.resolve(mode, bgName)
+    if (fg === null || bg === null) {
+      chromeReport.push(`${label}/${mode} 无法解析`)
+      chromeOk = false
+      continue
+    }
+    const ratio = contrast(fg, bg)
+    chromeReport.push(`${label}/${mode} ${ratio.toFixed(2)}`)
+    if (ratio < 4.5) chromeOk = false
+  }
+}
+check(
+  'D4 条自身文字颜色（来自宿主令牌）对比度全部 ≥ 4.5',
+  chromeOk,
+  chromeReport.join('，'),
+  'design-platform.css 里的令牌定义 + WCAG 公式，两边都不由本仓库提供',
+)
+
+// Tertiary text is allowed only where it is disabled, never for a string a user
+// has to read to understand what the bar is reporting.
+const tertiaryUses = [...clientSource.matchAll(/color:var\(--dsw-alias-label-tertiary/gu)].length
+const tertiaryOnlyOnDisabled = [...clientSource.matchAll(/([^\n]*label-tertiary[^\n]*)/gu)].every(
+  match => /:disabled/u.test(match[1]),
+)
+check(
+  'D4 label-tertiary 只用于禁用态，不承载要读的文案',
+  tertiaryUses <= 1 && tertiaryOnlyOnDisabled,
+  `${tertiaryUses} 处使用，全部在 :disabled 规则内: ${tertiaryOnlyOnDisabled}`,
+  '宿主 light 主题下 tertiary 只有 3.71:1，AA 不合格；secondary 为 5.80:1',
+)
+
 check(
   'D4 IME 组词期间的回车/Esc 不会被当成跳转或关闭',
   client.inputIntent({ key: 'Enter' }, true) === null &&
@@ -419,17 +554,34 @@ check(
 
 const a11y = {
   roleSearch: /role:\s*'search'/u.test(clientSource),
-  roleStatus: /role:\s*'status'/u.test(clientSource),
-  countDescribed: /'aria-describedby':\s*COUNT_ID/u.test(clientSource),
+  // The visible count is deliberately NOT a live region: it changes on every
+  // keystroke. The settled sentence is announced through a hidden status node.
+  roleStatus: /role:\s*'status'/u.test(clientSource) && /'aria-live':\s*'polite'/u.test(clientSource),
+  countDescribed: /'aria-describedby':\s*STATUS_ID/u.test(clientSource),
+  countableId: clientSource.includes(`const STATUS_ID = 'dfis-status'`),
   keyShortcuts: /'aria-keyshortcuts':\s*'Enter Shift\+Enter Escape F3'/u.test(clientSource),
   entryShortcut: /'aria-keyshortcuts':\s*'Control\+F Meta\+F'/u.test(clientSource),
-  busy: /'aria-busy':\s*state\.history === 'loading'/u.test(clientSource),
+  entryExpanded: /'aria-expanded':\s*state\.open \? 'true' : 'false'/u.test(clientSource),
+  announceDelay: clientSource.includes('ANNOUNCE_DELAY_MS') && /const ANNOUNCE_DELAY_MS = 500/u.test(clientSource),
 }
 check(
-  'D4 无障碍语义齐备（search 角色 / status 播报 / describedby / 快捷键声明 / busy）',
+  'D4 无障碍语义齐备（search 角色 / 独立播报区 / describedby / 快捷键 / 展开态）',
   Object.values(a11y).every(Boolean),
   JSON.stringify(a11y),
   'ARIA 属性可直接被辅助技术读取，也可静态核对',
+)
+
+// Live-region hygiene: the count must not be announced per keystroke, and the
+// announce path must be trailing-debounced rather than immediate.
+const liveRegionHygiene =
+  !/'role':\s*'status'[^\n]*dfis-count/u.test(clientSource) &&
+  /timer\.debounce\(text => \{/u.test(clientSource) &&
+  /statusText\(state, state\.query\)/u.test(clientSource)
+check(
+  'D4 计数不逐键播报，播报句带 500ms 收尾防抖',
+  liveRegionHygiene,
+  liveRegionHygiene ? '计数为静态 text，播报走 debounce(statusText)' : '仍存在逐键播报或在位播报',
+  'role=status 默认 polite+atomic，20ms 防抖会让屏幕阅读器每键念一次',
 )
 
 // ── 6. Area lock + dictionaries + docs (D5) ──────────────────────────────────
@@ -450,15 +602,54 @@ check(
   '用户要求“更深入而不是更大”',
 )
 
-const usedKeys = new Set([...clientSource.matchAll(/'(find\.[a-zA-Z]+)'/gu)].map(match => match[1]))
+// A key only counts as "used" if something outside the dictionary block names
+// it. Scanning the whole file would match the dictionary's own `'find.x':` rows
+// and make the "unused" half of this check vacuously empty.
+const dictionaryBlock = clientSource.slice(clientSource.indexOf('const zh = {'), clientSource.indexOf('const styles ='))
+const usageSource = clientSource.slice(0, clientSource.indexOf('const zh = {')) +
+  clientSource.slice(clientSource.indexOf('const styles ='))
+const usedKeys = new Set([...usageSource.matchAll(/'(find\.[a-zA-Z]+)'/gu)].map(match => match[1]))
 const zhMissing = [...usedKeys].filter(key => !(key in client.zh))
 const enMissing = [...usedKeys].filter(key => !(key in client.en))
 const zhExtra = Object.keys(client.zh).filter(key => !usedKeys.has(key))
 check(
-  'D5 文案单一数据源：每个用到的键在中英字典里都存在',
-  zhMissing.length === 0 && enMissing.length === 0,
+  'D5 文案单一数据源：用到的键都有中英文案，字典里没有死键',
+  zhMissing.length === 0 && enMissing.length === 0 && zhExtra.length === 0,
   `用到 ${usedKeys.size} 个键；缺 zh: [${zhMissing}]，缺 en: [${enMissing}]；未使用: [${zhExtra}]`,
-  '键集合是静态可枚举的，缺一个就会在界面上露出原键名',
+  '键集合是静态可枚举的，缺一个会在界面露出原键名，多一个说明有文案永远不会被读到',
+)
+check(
+  'D5 字典里的键在 client.js 里确实被引用（防止字典与代码各说各话）',
+  dictionaryBlock.includes(`const zh = {`) && Object.keys(client.zh).length > 8,
+  `${Object.keys(client.zh).length} 个键`,
+  '字典块本身仍是被 vm 求值的同一份源码',
+)
+
+// Every `{placeholder}` a template declares must be filled by a caller, or the
+// brace itself reaches the screen. This is not hypothetical: the budget message
+// once shipped `{rounds}` literally because its formatter took no params.
+const placeholderReport = []
+let placeholdersOk = true
+for (const [key, text] of [...Object.entries(client.zh), ...Object.entries(client.en)]) {
+  for (const match of String(text).matchAll(/\{([a-zA-Z][a-zA-Z0-9]*)\}/gu)) {
+    placeholderReport.push(`${key}:{${match[1]}}`)
+  }
+}
+const declaredPlaceholders = new Set(placeholderReport.map(entry => entry.split(':')[1]))
+const suppliedNames = new Set([
+  ...[...clientSource.matchAll(/params:\s*\{([^}]*)\}/gu)].flatMap(match =>
+    [...match[1].matchAll(/([a-zA-Z][a-zA-Z0-9]*)\s*:/gu)].map(name => `{${name[1]}}`),
+  ),
+  ...[...clientSource.matchAll(/function noteParams\(state\)\s*\{[^}]*return\s*\{([^}]*)\}/gu)].flatMap(match =>
+    [...match[1].matchAll(/([a-zA-Z][a-zA-Z0-9]*)\s*:/gu)].map(name => `{${name[1]}}`),
+  ),
+])
+const unfilled = [...declaredPlaceholders].filter(name => !suppliedNames.has(name))
+check(
+  'D5 每个 {占位符} 都有调用方填值，不会把大括号显示到界面上',
+  unfilled.length === 0,
+  `${declaredPlaceholders.size} 种占位符: [${[...declaredPlaceholders].join(' ')}]；无值: [${unfilled}]`,
+  '占位符与调用参数都是静态可枚举的，两边一比就知道',
 )
 
 const zhJson = JSON.parse(readFileSync(join(ROOT, 'locale/zh.json'), 'utf8'))

@@ -1,48 +1,53 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" role="img" aria-label="Find in conversation: a find bar over a chat transcript with highlighted matches">
-  <rect width="640" height="300" fill="#F5F6FC"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" role="img" aria-label="A find bar floats just under the conversation header, right-aligned to the chat column; two occurrences of the query are highlighted in the transcript and the second one is the darker active match">
+  <rect width="640" height="300" fill="#FFFFFF"/>
 
-  <!-- conversation column -->
-  <rect x="28" y="24" width="584" height="252" rx="12" fill="#FFFFFF"/>
-  <line x1="28" y1="56" x2="612" y2="56" stroke="#E7E8F0" stroke-width="1"/>
+  <!-- sidebar column (--dsw-specific-sidebar-fill, light: neutral-bluish-50) -->
+  <rect x="0" y="0" width="180" height="300" fill="#F9FAFB"/>
+  <line x1="180" y1="0" x2="180" y2="300" stroke="#E7E8F0" stroke-width="1"/>
 
-  <!-- sidebar rail hint -->
-  <rect x="28" y="24" width="44" height="252" rx="12" fill="#F0F1F8"/>
-  <rect x="44" y="140" width="12" height="12" rx="3" fill="#9AA0B4"/>
-  <circle cx="50" cy="176" r="7" fill="#D8DAE6"/>
+  <!-- conversation header: the bar is anchored below it, not inside it -->
+  <line x1="180" y1="36" x2="640" y2="36" stroke="#E7E8F0" stroke-width="1"/>
+  <text x="200" y="24" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#61666B">Conversation</text>
 
-  <!-- user message -->
-  <rect x="92" y="76" width="176" height="12" rx="6" fill="#DDE0EC"/>
-  <rect x="92" y="96" width="248" height="12" rx="6" fill="#DDE0EC"/>
+  <!-- transcript: user turn -->
+  <rect x="200" y="72" width="220" height="10" rx="5" fill="#DDE0EC"/>
+  <rect x="200" y="90" width="168" height="10" rx="5" fill="#DDE0EC"/>
 
-  <!-- assistant message with matches -->
-  <rect x="92" y="132" width="132" height="10" rx="5" fill="#E9EBF3"/>
-  <rect x="92" y="164" width="332" height="12" rx="6" fill="#E9EBF3"/>
-  <rect x="92" y="184" width="300" height="12" rx="6" fill="#E9EBF3"/>
-  <rect x="92" y="204" width="356" height="12" rx="6" fill="#E9EBF3"/>
-  <rect x="92" y="234" width="212" height="12" rx="6" fill="#E9EBF3"/>
+  <!-- transcript: assistant turn, two occurrences of the query -->
+  <text x="200" y="142" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#1A1A1A">The build prints</text>
+  <rect x="306" y="128" width="78" height="18" rx="4" fill="#FFF3BF"/>
+  <text x="310" y="142" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#1B1B1B">hello world</text>
+  <text x="386" y="142" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#1A1A1A">on startup.</text>
 
-  <!-- match highlight (inactive) on two runs -->
-  <rect x="168" y="162" width="58" height="16" rx="4" fill="#FFF3BF"/>
-  <rect x="212" y="202" width="58" height="16" rx="4" fill="#FFF3BF"/>
-  <!-- active match -->
-  <rect x="168" y="182" width="58" height="16" rx="4" fill="#FFB020"/>
+  <text x="200" y="174" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#1A1A1A">The second</text>
+  <rect x="274" y="160" width="78" height="18" rx="4" fill="#FFB020"/>
+  <text x="278" y="174" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#1B1B1B">hello world</text>
+  <text x="354" y="174" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#1A1A1A">is the active match.</text>
 
-  <!-- find bar -->
-  <rect x="352" y="34" width="244" height="34" rx="10" fill="#FFFFFF" stroke="#D9DBE8" stroke-width="1"/>
-  <rect x="352" y="34" width="244" height="34" rx="10" fill="none" stroke="#C9CCDC" stroke-width="1"/>
-  <circle cx="368" cy="51" r="5" fill="none" stroke="#6B7280" stroke-width="1.6"/>
-  <line x1="372" y1="55" x2="377" y2="60" stroke="#6B7280" stroke-width="1.6" stroke-linecap="round"/>
-  <text x="386" y="56" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#1A1A1A">hello world</text>
-  <text x="486" y="56" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#6B7280">2/5</text>
-  <line x1="512" y1="42" x2="512" y2="60" stroke="#E2E4EE" stroke-width="1"/>
-  <path d="M524 55l5-5 5 5" fill="none" stroke="#4B5563" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M544 47l5 5 5-5" fill="none" stroke="#4B5563" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M566 46l8 8M574 46l-8 8" fill="none" stroke="#4B5563" stroke-width="1.6" stroke-linecap="round"/>
+  <!-- the rest of the transcript, unhighlighted -->
+  <rect x="200" y="196" width="352" height="10" rx="5" fill="#E9EBF3"/>
+  <rect x="200" y="214" width="300" height="10" rx="5" fill="#E9EBF3"/>
+  <rect x="200" y="232" width="256" height="10" rx="5" fill="#E9EBF3"/>
 
-  <!-- sidebar footer entry -->
-  <rect x="36" y="248" width="28" height="20" rx="6" fill="#E7E9F4"/>
-  <circle cx="50" cy="258" r="4.5" fill="none" stroke="#5B6178" stroke-width="1.5"/>
+  <!-- sidebar footer entry: magnifier + label + live match count, 32px row -->
+  <rect x="8" y="252" width="164" height="32" rx="12" fill="#EFF1F6"/>
+  <circle cx="26" cy="268" r="4.5" fill="none" stroke="#61666B" stroke-width="1.5"/>
+  <line x1="29.5" y1="271.5" x2="33" y2="275" stroke="#61666B" stroke-width="1.5" stroke-linecap="round"/>
+  <text x="40" y="273" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#1A1A1A">Find in conversation</text>
+  <text x="148" y="273" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="12" fill="#61666B">2/2</text>
 
-  <!-- caption -->
-  <text x="92" y="292" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#7A8095">Ctrl+F opens one find bar over the conversation; matches highlight in place, the active one is darker.</text>
+  <!-- find bar: 34px tall (24px buttons + 5px padding), radius md (12px), one panel elevation -->
+  <rect x="308" y="44" width="316" height="34" rx="12" fill="#FFFFFF" stroke="#D9DBE8" stroke-width="0.5"/>
+  <rect x="308" y="44" width="316" height="34" rx="12" fill="none" stroke="#C9CCDC" stroke-width="0.5"/>
+
+  <!-- input: placeholder text, flex 1 -->
+  <text x="314" y="66" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" fill="#61666B">hello world</text>
+  <!-- count: label-secondary, tabular numerals, min-width 46 -->
+  <text x="492" y="65" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="11" fill="#61666B">2/2</text>
+  <!-- separator -->
+  <line x1="534" y1="53" x2="534" y2="69" stroke="#E2E4EE" stroke-width="0.5"/>
+  <!-- previous / next / close, 24x24 each, no search icon in the bar itself -->
+  <path d="M544 64l5-5 5 5" fill="none" stroke="#61666B" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M570 58l5 5 5-5" fill="none" stroke="#61666B" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M597 57l8 8M605 57l-8 8" fill="none" stroke="#61666B" stroke-width="1.6" stroke-linecap="round"/>
 </svg>
